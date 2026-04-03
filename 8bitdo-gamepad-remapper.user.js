@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         8BitDo Ultimate 3mode Xbox - Standard Gamepad Remapper
 // @namespace    https://github.com/leandrosalgado/8bitdo-ultimate-macos-remapper
-// @version      1.3
+// @version      1.4
 // @description  Remaps 8BitDo Ultimate 3mode Xbox controller (Vendor: 2dc8, Product: 901b) to W3C standard gamepad mapping. Fixes phantom inputs, wrong button mapping, and broken triggers on macOS Bluetooth.
 // @author       leandrosalgado
 // @license      MIT
@@ -59,12 +59,11 @@
   }
 
   function makeFakeButton(pressed, value) {
-    return {
-      pressed: pressed,
-      touched: pressed,
-      value: value,
-      __proto__: GamepadButton.prototype
-    };
+    const btn = Object.create(GamepadButton.prototype);
+    btn.pressed = pressed;
+    btn.touched = pressed;
+    btn.value = value;
+    return btn;
   }
 
   function remapGamepad(original) {
@@ -197,10 +196,13 @@
     configurable: true
   });
 
-  // Override gamepadconnected event to patch the gamepad object
+  // Override gamepadconnected/disconnected events to patch the gamepad object
+  const listenerMap = new WeakMap();
   const originalAddEventListener = EventTarget.prototype.addEventListener;
+  const originalRemoveEventListener = EventTarget.prototype.removeEventListener;
+
   EventTarget.prototype.addEventListener = function (type, listener, options) {
-    if (type === 'gamepadconnected' || type === 'gamepaddisconnected') {
+    if ((type === 'gamepadconnected' || type === 'gamepaddisconnected') && typeof listener === 'function') {
       const wrappedListener = function (event) {
         const remapped = remapGamepad(event.gamepad);
         const fakeEvent = new GamepadEvent(event.type, {
@@ -208,9 +210,25 @@
         });
         listener.call(this, fakeEvent);
       };
+      // Store mapping so removeEventListener can find the wrapper
+      if (!listenerMap.has(listener)) listenerMap.set(listener, new Map());
+      listenerMap.get(listener).set(type, wrappedListener);
       return originalAddEventListener.call(this, type, wrappedListener, options);
     }
     return originalAddEventListener.call(this, type, listener, options);
+  };
+
+  EventTarget.prototype.removeEventListener = function (type, listener, options) {
+    if ((type === 'gamepadconnected' || type === 'gamepaddisconnected') && typeof listener === 'function') {
+      const typeMap = listenerMap.get(listener);
+      const wrappedListener = typeMap && typeMap.get(type);
+      if (wrappedListener) {
+        typeMap.delete(type);
+        if (typeMap.size === 0) listenerMap.delete(listener);
+        return originalRemoveEventListener.call(this, type, wrappedListener, options);
+      }
+    }
+    return originalRemoveEventListener.call(this, type, listener, options);
   };
 
   console.log('[8BitDo Remapper] Gamepad API intercepted. Waiting for 8BitDo Ultimate 3mode Xbox controller...');
